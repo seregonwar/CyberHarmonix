@@ -12,11 +12,13 @@ import {
   StreamType
 } from '@discordjs/voice';
 import { exec } from 'child_process';
+import express from 'express';
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildVoiceStates,
-  GatewayIntentBits.GuildMessages
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent
 ] });
 
 const queue = new Map();
@@ -306,3 +308,14 @@ async function play(guild, song) {
   serverQueue.player.play(resource);
   console.log(`Now playing: ${song.title}`);
 }
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/servers', (req, res) => {
+  const servers = client.guilds.cache.map(guild => ({ id: guild.id, name: guild.name }));
+  res.json(servers);
+});
+
+app.listen(PORT, () => {
+  console.log(`API server running on port ${PORT}`);
+});
