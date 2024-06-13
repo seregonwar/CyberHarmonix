@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import DiscordJS from 'discord.js';
-const { Client, GatewayIntentBits, MessageActionRow, MessageButton, IntentsBitField, EmbedBuilder } = DiscordJS;
+const { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder } = DiscordJS;
 import ytdl from 'ytdl-core';
 import {
   createAudioPlayer,
@@ -9,16 +9,14 @@ import {
   joinVoiceChannel,
   AudioPlayerStatus,
   entersState,
-  VoiceConnection,
   StreamType,
   getVoiceConnection
 } from '@discordjs/voice';
 import { exec } from 'child_process';
 import express from 'express';
 import { search } from 'yt-search';
-import { createReadStream, existsSync } from 'fs';
-import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
 // Definisci __dirname basato su import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -34,9 +32,6 @@ const client = new Client({
 });
 
 const queue = new Map();
-let currentVoiceChannel = null;
-let currentStream = null;
-let currentVideoPath = null;
 
 client.once('ready', () => {
   console.log('Bot is online!');
@@ -44,16 +39,13 @@ client.once('ready', () => {
 
 client.login(process.env.DISCORD_TOKEN);
 
-// Funzione per gestire la riproduzione di un video o brano
 async function execute(message, serverQueue, url) {
   const voiceChannel = message.member.voice.channel;
   if (!voiceChannel) {
-    console.log('User is not in a voice channel');
     return message.channel.send('Devi essere in un canale vocale per riprodurre la musica!');
   }
   const permissions = voiceChannel.permissionsFor(message.client.user);
   if (!permissions.has('CONNECT') || !permissions.has('SPEAK')) {
-    console.log('Il bot non ha i permessi per unirsi o parlare nel canale vocale');
     return message.channel.send('Ho bisogno dei permessi per unirmi e parlare nel tuo canale vocale!');
   }
 
@@ -61,6 +53,7 @@ async function execute(message, serverQueue, url) {
   const song = {
     title: songInfo.videoDetails.title,
     url: songInfo.videoDetails.video_url,
+    duration: songInfo.videoDetails.lengthSeconds
   };
 
   if (!serverQueue) {
@@ -88,7 +81,7 @@ async function execute(message, serverQueue, url) {
       connection.subscribe(queueContruct.player);
       play(message.guild, queueContruct.songs[0]);
     } catch (err) {
-      console.error('Errore nel joinVoiceChannel o player:', err);
+      console.error(err);
       queue.delete(message.guild.id);
       return message.channel.send(`Errore: ${err.message}`);
     }
@@ -101,7 +94,6 @@ async function execute(message, serverQueue, url) {
 async function play(guild, song) {
   const serverQueue = queue.get(guild.id);
   if (!song) {
-    console.log('Nessuna canzone in coda');
     serverQueue.connection.disconnect();
     queue.delete(guild.id);
     return;
@@ -110,138 +102,58 @@ async function play(guild, song) {
   const stream = ytdl(song.url, { filter: 'audioonly' });
   const resource = createAudioResource(stream);
   serverQueue.player.play(resource);
-  console.log(`Ora in riproduzione: ${song.title}`);
 
   // Crea pulsanti di controllo
+  const row = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('pause')
+        .setLabel('Pausa')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('play')
+        .setLabel('Riprendi')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('skip')
+        .setLabel('Salta')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('stop')
+        .setLabel('Ferma')
+        .setStyle(ButtonStyle.Danger)
+    );
+
   const embed = new EmbedBuilder()
     .setTitle(`Ora in riproduzione: ${song.title}`)
     .setDescription('Controlla la riproduzione:')
     .addFields(
-      { name: 'Pausa', value: '👍', inline: true },
-      { name: 'Riprendi', value: '👎', inline: true },
-      { name: 'Salta', value: '⏭️', inline: true },
-      { name: 'Ferma', value: '⏹️', inline: true }
+      { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
     );
 
-  // Invia il messaggio con l'embed
-  serverQueue.textChannel.send({ embeds: [embed] });
+  // Invia il messaggio con l'embed e i pulsanti
+  serverQueue.textChannel.send({ embeds: [embed], components: [row] });
 
-  // Gestisci eventi del player audio
   serverQueue.player.on(AudioPlayerStatus.Idle, () => {
-    console.log('Player is idle');
-    if (serverQueue && serverQueue.songs.length > 0) {
-      serverQueue.songs.shift();
-      play(guild, serverQueue.songs[0]);
-    } else {
-      serverQueue.textChannel.send('Queue is empty or serverQueue is not defined.');
-      if (serverQueue) {
-        serverQueue.connection.disconnect();
-        queue.delete(guild.id);
-      }
-    }
+    serverQueue.songs.shift();
+    play(guild, serverQueue.songs[0]);
   });
-}
-
-// Funzione per gestire la riproduzione di un film da streamingcommunity
-async function playMovie(message, serverQueue, extension, movieId) {
-  const voiceChannel = message.member.voice.channel;
-  if (!voiceChannel) {
-    console.log('User is not in a voice channel');
-    return message.channel.send('You need to be in a voice channel to play music!');
-  }
-  const permissions = voiceChannel.permissionsFor(message.client.user);
-  if (!permissions.has('CONNECT') || !permissions.has('SPEAK')) {
-    console.log('Bot lacks permissions to join or speak in the voice channel');
-    return message.channel.send('I need the permissions to join and speak in your voice channel!');
-  }
-
-  const movieUrl = `https://streamingcommunity.${extension}/watch/${movieId}`;
-
-  if (!serverQueue) {
-    const queueContruct = {
-      textChannel: message.channel,
-      voiceChannel: voiceChannel,
-      connection: null,
-      player: null,
-      songs: [],
-      volume: 5,
-      playing: true,
-    };
-
-    queue.set(message.guild.id, queueContruct);
-
-    try {
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: voiceChannel.guild.id,
-        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      });
-
-      const player = createAudioPlayer();
-
-      const ffmpeg = exec(`ffmpeg -i "${movieUrl}" -f s16le -ar 48000 -ac 2 pipe:1`);
-      const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-
-      player.on(AudioPlayerStatus.Playing, () => {
-        console.log(`Started playing movie`);
-        queueContruct.textChannel.send(`Start playing movie!`);
-      });
-
-      player.on(AudioPlayerStatus.Idle, () => {
-        console.log('Player is idle');
-        if (serverQueue && serverQueue.songs.length > 0) {
-          serverQueue.songs.shift();
-          play(message.guild, serverQueue.songs[0]);
-        } else {
-          queueContruct.textChannel.send('Queue is empty or serverQueue is not defined.');
-          if (serverQueue) {
-            serverQueue.connection.disconnect();
-            queue.delete(message.guild.id);
-          }
-        }
-      });
-
-      player.on('error', error => {
-        console.error('Error in audio player:', error);
-        queueContruct.textChannel.send(`Error: ${error.message}`);
-      });
-
-      queueContruct.connection = connection;
-      queueContruct.player = player;
-
-      connection.subscribe(player);
-      player.play(resource);
-
-      await entersState(connection, VoiceConnection.Ready, 30000);
-    } catch (err) {
-      console.error('Error in joinVoiceChannel or player:', err);
-      queue.delete(message.guild.id);
-      return message.channel.send(`Error: ${err.message}`);
-    }
-  } else {
-    serverQueue.songs.push({ title: 'Movie', url: movieUrl });
-    message.channel.send('Movie has been added to the queue!');
-  }
 }
 
 function skip(message, serverQueue) {
   if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to skip the music!');
   if (!serverQueue) return message.channel.send('There is no song that I could skip!');
   serverQueue.player.stop();
-  console.log('Skipped the song');
 }
 
-// Funzione per gestire il comando !stop
 function stop(message, serverQueue) {
   if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to stop the music!');
   if (!serverQueue) return;
   serverQueue.songs = [];
   serverQueue.player.stop();
   serverQueue.connection.disconnect();
-  console.log('Stopped the music and disconnected');
 }
 
-// Inizia il server API
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -254,7 +166,6 @@ app.listen(PORT, () => {
   console.log(`API server running on port ${PORT}`);
 });
 
-// Gestisci le interazioni con i bottoni
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
@@ -288,16 +199,12 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Gestisci i comandi del bot
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.content.startsWith('!')) return;
 
-  console.log(`Received message: ${message.content}`);
-  
   const serverQueue = queue.get(message.guild.id);
 
-  // Gestisci il comando !play
   if (message.content.startsWith('!play')) {
     const args = message.content.split(' ');
     const query = args.slice(1).join(' ');
@@ -317,34 +224,30 @@ client.on('messageCreate', async (message) => {
     } else {
       message.channel.send('Inserisci un link YouTube o una query per la ricerca!');
     }
-  // Gestisci il comando !skip
   } else if (message.content.startsWith('!skip')) {
     skip(message, serverQueue);
-  // Gestisci il comando !stop
   } else if (message.content.startsWith('!stop')) {
     stop(message, serverQueue);
-  // Gestisci il comando !video
-  } else if (message.content.startsWith('!video')) {
-    const args = message.content.split(' ');
-    const query = args.slice(1).join(' ');
+  } else if (message.content.startsWith('!help')) {
+    const helpMessage = new EmbedBuilder()
+      .setTitle('Comandi del Bot')
+      .setDescription('Ecco una lista di comandi disponibili:')
+      .addFields(
+        { name: '!play <link o query>', value: 'Riproduce una canzone o aggiunge una canzone alla coda.' },
+        { name: '!skip', value: 'Salta la canzone attualmente in riproduzione.' },
+        { name: '!stop', value: 'Ferma la riproduzione della musica e disconnette il bot dal canale vocale.' },
+        { name: '!help', value: 'Mostra questo messaggio di aiuto.' },
+        { name: '!shutdown', value: 'Spegne il bot.' }
+      );
 
-    if (query) {
-      exec(`node download-video.js "${query}"`, (error, stdout, stderr) => {
-        if (error) {
-          console.error(`Errore nello script: ${error.message}`);
-          return message.channel.send(`Errore nello script: ${error.message}`);
-        }
-
-        if (stderr) {
-          console.error(`Errore: ${stderr}`);
-          return message.channel.send(`Errore: ${stderr}`);
-        }
-
-        console.log(`Output dello script: ${stdout}`);
-        message.channel.send(`Output dello script: ${stdout}`);
-      });
+    message.channel.send({ embeds: [helpMessage] });
+  } else if (message.content.startsWith('!shutdown')) {
+    if (message.author.id === process.env.OWNER_ID) {
+      message.channel.send('Spegnimento del bot in corso...')
+        .then(() => client.destroy())
+        .then(() => process.exit());
     } else {
-      message.channel.send('Inserisci una query per cercare un video!');
+      message.channel.send('Non hai i permessi per spegnere il bot.');
     }
   }
 });
