@@ -1,27 +1,22 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import DiscordJS from 'discord.js';
-const { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder, InteractionCollector } = DiscordJS;
-
+const { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder } = DiscordJS;
 import ytdl from 'ytdl-core';
 import {
-  AudioPlayer,
+  createAudioPlayer,
   createAudioResource,
   joinVoiceChannel,
-  VoiceConnection,
-  StreamType,
   AudioPlayerStatus,
-  VoiceConnectionStatus,
-  createAudioPlayer,
+  entersState,
+  StreamType,
+  getVoiceConnection
 } from '@discordjs/voice';
-import { createReadStream } from 'fs';
-import { join } from 'path';
 import { exec } from 'child_process';
 import express from 'express';
 import { search } from 'yt-search';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-
 
 // Definisci __dirname basato su import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -37,9 +32,6 @@ const client = new Client({
 });
 
 const queue = new Map();
-
-let currentStream; // Dichiara stream come variabile globale
-let currentResource; // Dichiara resource come variabile globale
 
 client.once('ready', () => {
   console.log('Bot is online!');
@@ -61,8 +53,7 @@ async function execute(message, serverQueue, url) {
   const song = {
     title: songInfo.videoDetails.title,
     url: songInfo.videoDetails.video_url,
-    duration: songInfo.videoDetails.lengthSeconds,
-    speed: 1 // Velocità di riproduzione iniziale
+    duration: songInfo.videoDetails.lengthSeconds
   };
 
   if (!serverQueue) {
@@ -72,9 +63,8 @@ async function execute(message, serverQueue, url) {
       connection: null,
       player: createAudioPlayer(),
       songs: [],
-      volume: 100, // Volume iniziale
+      volume: 5,
       playing: true,
-      speed: 1 // Velocità iniziale
     };
 
     queue.set(message.guild.id, queueContruct);
@@ -109,31 +99,12 @@ async function play(guild, song) {
     return;
   }
 
-  try {
-    currentStream = ytdl(song.url, { filter: 'audioonly', quality: 'highestaudio' });
-    currentStream.on('error', (error) => {
-      highWaterMark: 1 << 25; // 32MB buffer
-      dlChunkSize: 0; // Streaming mode
-      liveBuffer: 0; // No buffer for live streams
-      console.error('Stream Error:', error);
-      serverQueue.textChannel.send('Si è verificato un errore durante lo streaming. Riprova più tardi.');
-      serverQueue.songs.shift(); // Rimuovi la canzone corrente
-      play(guild, serverQueue.songs[0]); // Vai alla prossima canzone
-    });
-    
-    currentResource = createAudioResource(currentStream, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true,
-      volume: serverQueue.volume / 100, // Volume da 0 a 1
-      sampleRate: 48000, // Sample rate per la qualità audio
-      bitrate: 128000, // Bitrate per la qualità audio
-      speed: serverQueue.speed, // Velocità di riproduzione
-    });
+  const stream = ytdl(song.url, { filter: 'audioonly' });
+  const resource = createAudioResource(stream);
+  serverQueue.player.play(resource);
 
-    serverQueue.player.play(currentResource);
-
-    // Crea pulsanti di controllo
-    const row = new ActionRowBuilder()
+  // Crea pulsanti di controllo
+  const row = new ActionRowBuilder()
     .addComponents(
       new ButtonBuilder()
         .setCustomId('pause')
@@ -149,118 +120,34 @@ async function play(guild, song) {
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId('stop')
-        .setLabel('Stop')
+        .setLabel('Ferma')
         .setStyle(ButtonStyle.Danger)
     );
 
-    // Crea un menu a tendina per la velocità
-    const speedMenu = new StringSelectMenuBuilder()
-    .setCustomId('speed_menu')
-    .setPlaceholder('Seleziona la velocità')
-    .addOptions([
-      { label: '1x', value: '1', default: true },
-      { label: '0.5x', value: '0.5' },
-      { label: '1.5x', value: '1.5' },
-      { label: '2x', value: '2' }
-    ]);
-
-    // Crea un menu a tendina per il volume
-    const volumeMenu = new StringSelectMenuBuilder()
-    .setCustomId('volume_menu')
-    .setPlaceholder('Seleziona il volume')
-    .addOptions([
-      { label: '0%', value: '0' },
-      { label: '25%', value: '25' },
-      { label: '50%', value: '50' },
-      { label: '75%', value: '75' },
-      { label: '100%', value: '100' }
-    ]);
-
-    // Crea una riga per il menu velocità
-    const speedRow = new ActionRowBuilder()
-    .addComponents(speedMenu);
-
-    // Crea una riga per il menu volume
-    const volumeRow = new ActionRowBuilder()
-    .addComponents(volumeMenu);
-
-    // Crea l'embed
-    const embed = new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(`Ora in riproduzione: ${song.title}`)
     .setDescription('Controlla la riproduzione:')
     .addFields(
       { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
     );
-  
-    serverQueue.message = await serverQueue.textChannel.send({
-      embeds: [embed],
-      components: [row, speedRow, volumeRow] // Aggiungi tutte le righe
-    });
 
-    // Crea un gestore di interazioni per i pulsanti e i menu a tendina
-    const collector = serverQueue.message.createMessageComponentCollector({ time: 15000 }); // Tempo di ascolto delle interazioni
+  // Invia il messaggio con l'embed e i pulsanti
+  serverQueue.textChannel.send({ embeds: [embed], components: [row] });
 
-    collector.on('collect', async (interaction) => {
-      if (interaction.customId === 'pause') {
-        if (serverQueue.player.state.status === AudioPlayerStatus.Paused) {
-          serverQueue.player.unpause();
-          await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
-        } else {
-          serverQueue.player.pause();
-          await interaction.update({ content: 'Riproduzione in pausa.', ephemeral: true });
-        }
-      } else if (interaction.customId === 'play') {
-        if (serverQueue.player.state.status === AudioPlayerStatus.Playing) {
-          await interaction.update({ content: 'La riproduzione è già in corso.', ephemeral: true });
-        } else {
-          serverQueue.player.unpause();
-          await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
-        }
-      } else if (interaction.customId === 'skip') {
-        skip(interaction.message, serverQueue);
-        await interaction.update({ content: 'Riproduzione saltata.', ephemeral: true });
-      } else if (interaction.customId === 'stop') {
-        stop(interaction.message, serverQueue);
-        await interaction.update({ content: 'Riproduzione interrotta.', ephemeral: true });
-      } else if (interaction.customId === 'speed_menu') {
-        serverQueue.speed = parseFloat(interaction.values[0]);
-        // Riproduci la canzone con la nuova velocità
-        currentResource.playbackSpeed = serverQueue.speed;
-        serverQueue.player.play(currentResource);
-        await interaction.update({ content: `Velocità modificata a ${interaction.values[0]}x.`, ephemeral: true });
-      } else if (interaction.customId === 'volume_menu') {
-        serverQueue.volume = parseInt(interaction.values[0]);
-        // Aggiorna il volume del player
-        currentResource.volume.setVolume(serverQueue.volume / 100); // Volume da 0 a 1
-        await interaction.update({ content: `Volume modificato a ${interaction.values[0]}%`, ephemeral: true });
-      }
-    });
-
-    serverQueue.player.on(AudioPlayerStatus.Idle, () => {
-      serverQueue.songs.shift();
-      play(guild, serverQueue.songs[0]);
-    });
-
-    serverQueue.player.on('error', (error) => {
-      console.error('AudioPlayer Error:', error);
-      serverQueue.textChannel.send('Si è verificato un errore durante la riproduzione della canzone. Sto provando a riprodurre la prossima canzone...');
-      serverQueue.songs.shift(); // Rimuovi la canzone corrente
-      play(guild, serverQueue.songs[0]); // Vai alla prossima canzone
-    });
-  } catch (error) {
-    console.error('Error creating audio resource:', error);
-    serverQueue.textChannel.send('Si è verificato un errore durante la riproduzione della canzone. Riprova più tardi.');
-  }
+  serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+    serverQueue.songs.shift();
+    play(guild, serverQueue.songs[0]);
+  });
 }
 
 function skip(message, serverQueue) {
-  if (!message.member.voice.channel) return message.channel.send('Devi essere in un canale vocale per saltare la musica!');
-  if (!serverQueue) return message.channel.send('Non c\'è nessuna canzone che posso saltare!');
+  if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to skip the music!');
+  if (!serverQueue) return message.channel.send('There is no song that I could skip!');
   serverQueue.player.stop();
 }
 
 function stop(message, serverQueue) {
-  if (!message.member.voice.channel) return message.channel.send('Devi essere in un canale vocale per fermare la musica!');
+  if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to stop the music!');
   if (!serverQueue) return;
   serverQueue.songs = [];
   serverQueue.player.stop();
@@ -285,41 +172,30 @@ client.on('interactionCreate', async interaction => {
   const serverQueue = queue.get(interaction.guild.id);
 
   if (!serverQueue) {
-    await interaction.update({ content: 'Nessuna canzone in riproduzione al momento.', ephemeral: true });
+    interaction.reply({ content: 'No song currently playing.', ephemeral: true });
     return;
   }
 
   if (interaction.customId === 'play') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Paused) {
       serverQueue.player.unpause();
-      await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
+      interaction.reply({ content: 'Resumed playing.', ephemeral: true });
     } else {
-      await interaction.update({ content: 'La riproduzione è già in corso.', ephemeral: true });
+      interaction.reply({ content: 'Already playing.', ephemeral: true });
     }
   } else if (interaction.customId === 'pause') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Playing) {
       serverQueue.player.pause();
-      await interaction.update({ content: 'Riproduzione in pausa.', ephemeral: true });
+      interaction.reply({ content: 'Paused playback.', ephemeral: true });
     } else {
-      await interaction.update({ content: 'La riproduzione è già in pausa.', ephemeral: true });
+      interaction.reply({ content: 'Already paused.', ephemeral: true });
     }
   } else if (interaction.customId === 'skip') {
     skip(interaction.message, serverQueue);
-    await interaction.update({ content: 'Riproduzione saltata.', ephemeral: true });
+    interaction.reply({ content: 'Skipped playback.', ephemeral: true });
   } else if (interaction.customId === 'stop') {
     stop(interaction.message, serverQueue);
-    await interaction.update({ content: 'Riproduzione interrotta.', ephemeral: true });
-  } else if (interaction.customId === 'speed_menu') {
-    serverQueue.speed = parseFloat(interaction.values[0]);
-    // Riproduci la canzone con la nuova velocità
-    currentResource.playbackSpeed = serverQueue.speed;
-    serverQueue.player.play(currentResource);
-    await interaction.update({ content: `Velocità modificata a ${interaction.values[0]}x.`, ephemeral: true });
-  } else if (interaction.customId === 'volume_menu') {
-    serverQueue.volume = parseInt(interaction.values[0]);
-    // Aggiorna il volume del player
-    currentResource.volume.setVolume(serverQueue.volume / 100); // Volume da 0 a 1
-    await interaction.update({ content: `Volume modificato a ${interaction.values[0]}%`, ephemeral: true });
+    interaction.reply({ content: 'Stopped playback.', ephemeral: true });
   }
 });
 
