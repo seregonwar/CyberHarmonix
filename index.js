@@ -99,55 +99,67 @@ async function play(guild, song) {
     return;
   }
 
-  const stream = ytdl(song.url, { filter: 'audioonly' });
-  const resource = createAudioResource(stream);
-  serverQueue.player.play(resource);
+  try {
+    const stream = ytdl(song.url, { filter: 'audioonly' });
+    const resource = createAudioResource(stream);
+    serverQueue.player.play(resource);
 
-  // Crea pulsanti di controllo
-  const row = new ActionRowBuilder()
-    .addComponents(
-      new ButtonBuilder()
-        .setCustomId('pause')
-        .setLabel('Pausa')
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId('play')
-        .setLabel('Riprendi')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('skip')
-        .setLabel('Salta')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId('stop')
-        .setLabel('Ferma')
-        .setStyle(ButtonStyle.Danger)
-    );
+    // Crea pulsanti di controllo
+    const row = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId('pause')
+          .setLabel('Pausa')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('play')
+          .setLabel('Riprendi')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId('skip')
+          .setLabel('Salta')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('stop')
+          .setLabel('Ferma')
+          .setStyle(ButtonStyle.Danger)
+      );
 
-  const embed = new EmbedBuilder()
-    .setTitle(`Ora in riproduzione: ${song.title}`)
-    .setDescription('Controlla la riproduzione:')
-    .addFields(
-      { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
-    );
+    const embed = new EmbedBuilder()
+      .setTitle(`Ora in riproduzione: ${song.title}`)
+      .setDescription('Controlla la riproduzione:')
+      .addFields(
+        { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
+      );
 
-  // Invia il messaggio con l'embed e i pulsanti
-  serverQueue.textChannel.send({ embeds: [embed], components: [row] });
+    // Invia il messaggio con l'embed e i pulsanti
+    serverQueue.textChannel.send({ embeds: [embed], components: [row] });
 
-  serverQueue.player.on(AudioPlayerStatus.Idle, () => {
-    serverQueue.songs.shift();
-    play(guild, serverQueue.songs[0]);
-  });
+    serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+      serverQueue.songs.shift();
+      play(guild, serverQueue.songs[0]);
+    });
+
+    serverQueue.player.on('error', (error) => {
+      console.error('AudioPlayer Error:', error);
+      serverQueue.textChannel.send('Si è verificato un errore durante la riproduzione della canzone. Sto provando a riprodurre la prossima canzone...');
+      serverQueue.songs.shift(); // Rimuovi la canzone corrente
+      play(guild, serverQueue.songs[0]); // Vai alla prossima canzone
+    });
+  } catch (error) {
+    console.error('Error creating audio resource:', error);
+    serverQueue.textChannel.send('Si è verificato un errore durante la riproduzione della canzone. Riprova più tardi.');
+  }
 }
 
 function skip(message, serverQueue) {
-  if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to skip the music!');
-  if (!serverQueue) return message.channel.send('There is no song that I could skip!');
+  if (!message.member.voice.channel) return message.channel.send('Devi essere in un canale vocale per saltare la musica!');
+  if (!serverQueue) return message.channel.send('Non c\'è nessuna canzone che posso saltare!');
   serverQueue.player.stop();
 }
 
 function stop(message, serverQueue) {
-  if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to stop the music!');
+  if (!message.member.voice.channel) return message.channel.send('Devi essere in un canale vocale per fermare la musica!');
   if (!serverQueue) return;
   serverQueue.songs = [];
   serverQueue.player.stop();
@@ -172,30 +184,30 @@ client.on('interactionCreate', async interaction => {
   const serverQueue = queue.get(interaction.guild.id);
 
   if (!serverQueue) {
-    interaction.reply({ content: 'No song currently playing.', ephemeral: true });
+    interaction.reply({ content: 'Nessuna canzone in riproduzione al momento.', ephemeral: true });
     return;
   }
 
   if (interaction.customId === 'play') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Paused) {
       serverQueue.player.unpause();
-      interaction.reply({ content: 'Resumed playing.', ephemeral: true });
+      interaction.reply({ content: 'Ripresa della riproduzione.', ephemeral: true });
     } else {
-      interaction.reply({ content: 'Already playing.', ephemeral: true });
+      interaction.reply({ content: 'La riproduzione è già in corso.', ephemeral: true });
     }
   } else if (interaction.customId === 'pause') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Playing) {
       serverQueue.player.pause();
-      interaction.reply({ content: 'Paused playback.', ephemeral: true });
+      interaction.reply({ content: 'Riproduzione in pausa.', ephemeral: true });
     } else {
-      interaction.reply({ content: 'Already paused.', ephemeral: true });
+      interaction.reply({ content: 'La riproduzione è già in pausa.', ephemeral: true });
     }
   } else if (interaction.customId === 'skip') {
     skip(interaction.message, serverQueue);
-    interaction.reply({ content: 'Skipped playback.', ephemeral: true });
+    interaction.reply({ content: 'Riproduzione saltata.', ephemeral: true });
   } else if (interaction.customId === 'stop') {
     stop(interaction.message, serverQueue);
-    interaction.reply({ content: 'Stopped playback.', ephemeral: true });
+    interaction.reply({ content: 'Riproduzione interrotta.', ephemeral: true });
   }
 });
 
