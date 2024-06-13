@@ -1,13 +1,13 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import DiscordJS from 'discord.js';
-const { Client, GatewayIntentBits, MessageActionRow, MessageButton, IntentsBitField, MessageEmbed } = DiscordJS; 
+const { Client, GatewayIntentBits, MessageActionRow, MessageButton, IntentsBitField, EmbedBuilder } = DiscordJS;
 import ytdl from 'ytdl-core';
-import { 
-  createAudioPlayer, 
-  createAudioResource, 
-  joinVoiceChannel, 
-  AudioPlayerStatus, 
+import {
+  createAudioPlayer,
+  createAudioResource,
+  joinVoiceChannel,
+  AudioPlayerStatus,
   entersState,
   VoiceConnection,
   StreamType,
@@ -20,20 +20,21 @@ import { createReadStream, existsSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
-
 // Definisci __dirname basato su import.meta.url
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const client = new Client({ intents: [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildVoiceStates,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent
-] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
 
 const queue = new Map();
-let currentVoiceChannel = null; 
+let currentVoiceChannel = null;
 let currentStream = null;
 let currentVideoPath = null;
 
@@ -112,7 +113,7 @@ async function play(guild, song) {
   console.log(`Ora in riproduzione: ${song.title}`);
 
   // Crea pulsanti di controllo
-  const embed = new MessageEmbed()
+  const embed = new EmbedBuilder()
     .setTitle(`Ora in riproduzione: ${song.title}`)
     .setDescription('Controlla la riproduzione:')
     .addFields(
@@ -223,7 +224,6 @@ async function playMovie(message, serverQueue, extension, movieId) {
   }
 }
 
-// Funzione per gestire il comando !skip
 function skip(message, serverQueue) {
   if (!message.member.voice.channel) return message.channel.send('You have to be in a voice channel to skip the music!');
   if (!serverQueue) return message.channel.send('There is no song that I could skip!');
@@ -300,11 +300,11 @@ client.on('messageCreate', async (message) => {
   // Gestisci il comando !play
   if (message.content.startsWith('!play')) {
     const args = message.content.split(' ');
-    const query = args.slice(1).join(' '); 
+    const query = args.slice(1).join(' ');
 
-    if (query) { 
+    if (query) {
       if (ytdl.validateURL(query)) {
-        execute(message, serverQueue, query); 
+        execute(message, serverQueue, query);
       } else {
         const searchResults = await search(query);
         if (searchResults.videos.length > 0) {
@@ -326,61 +326,25 @@ client.on('messageCreate', async (message) => {
   // Gestisci il comando !video
   } else if (message.content.startsWith('!video')) {
     const args = message.content.split(' ');
-    const query = args.slice(1).join(' '); 
+    const query = args.slice(1).join(' ');
 
     if (query) {
-      const searchResults = await search(query);
-      if (searchResults.videos.length > 0) {
-        const video = searchResults.videos[0];
-        message.channel.send(`**${video.title}**\n${video.url}`); 
-      } else {
-        message.channel.send('Nessun risultato trovato!');
-      }
+      exec(`node download-video.js "${query}"`, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Errore nello script: ${error.message}`);
+          return message.channel.send(`Errore nello script: ${error.message}`);
+        }
+
+        if (stderr) {
+          console.error(`Errore: ${stderr}`);
+          return message.channel.send(`Errore: ${stderr}`);
+        }
+
+        console.log(`Output dello script: ${stdout}`);
+        message.channel.send(`Output dello script: ${stdout}`);
+      });
     } else {
-      message.channel.send('Inserisci una query per la ricerca del video!');
+      message.channel.send('Inserisci una query per cercare un video!');
     }
-  // Gestisci il comando !share (condivisione schermo)
-  } else if (message.content.startsWith('!share')) {
-    const voiceChannel = message.member.voice.channel;
-
-    if (!voiceChannel) {
-      return message.reply('You need to be in a voice channel to share your screen!');
-    }
-
-    try {
-      // Ottieni la connessione vocale
-      const connection = getVoiceConnection(voiceChannel.guild.id);
-      if (!connection) {
-        // Se non c'è una connessione, crea una nuova connessione
-        connection = joinVoiceChannel({
-          channelId: voiceChannel.id,
-          guildId: voiceChannel.guild.id,
-          adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-        });
-      }
-
-      // Crea un nuovo flusso di condivisione dello schermo
-      const screenShareStream = createReadStream('./your_screen_share_file.mp4'); 
-      const resource = createAudioResource(screenShareStream, { inputType: StreamType.Opus }); 
-
-      // Crea un nuovo player audio
-      const player = createAudioPlayer();
-
-      // Esegui la riproduzione del flusso di condivisione dello schermo
-      player.play(resource);
-      connection.subscribe(player);
-
-      message.reply('Sharing screen!');
-    } catch (error) {
-      console.error('Error sharing screen:', error);
-      message.reply('Failed to share screen!');
-    }
-  } else if (message.content.startsWith('!help')) {
-    const helpMessage = `Comandi disponibili:
-    - **!play [link/titolo]**: Riproduce un brano da YouTube.\n
-    - **!skip**: Salta al brano successivo.\n
-    - **!stop**: Arresta la riproduzione.\n
-    - **!video [query]**: Cerca un video su YouTube.`;
-    message.channel.send(helpMessage);
   }
 });
