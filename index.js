@@ -1,22 +1,27 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import DiscordJS from 'discord.js';
-const { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder } = DiscordJS;
+const { Client, GatewayIntentBits, EmbedBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder, StringSelectMenuBuilder, InteractionCollector } = DiscordJS;
+
 import ytdl from 'ytdl-core';
 import {
-  createAudioPlayer,
+  AudioPlayer,
   createAudioResource,
   joinVoiceChannel,
-  AudioPlayerStatus,
-  entersState,
+  VoiceConnection,
   StreamType,
-  getVoiceConnection
+  AudioPlayerStatus,
+  VoiceConnectionStatus,
+  createAudioPlayer,
 } from '@discordjs/voice';
+import { createReadStream } from 'fs';
+import { join } from 'path';
 import { exec } from 'child_process';
 import express from 'express';
 import { search } from 'yt-search';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+
 
 // Definisci __dirname basato su import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -32,6 +37,9 @@ const client = new Client({
 });
 
 const queue = new Map();
+
+let currentStream; // Dichiara stream come variabile globale
+let currentResource; // Dichiara resource come variabile globale
 
 client.once('ready', () => {
   console.log('Bot is online!');
@@ -53,7 +61,8 @@ async function execute(message, serverQueue, url) {
   const song = {
     title: songInfo.videoDetails.title,
     url: songInfo.videoDetails.video_url,
-    duration: songInfo.videoDetails.lengthSeconds
+    duration: songInfo.videoDetails.lengthSeconds,
+    speed: 1 // Velocità di riproduzione iniziale
   };
 
   if (!serverQueue) {
@@ -63,8 +72,9 @@ async function execute(message, serverQueue, url) {
       connection: null,
       player: createAudioPlayer(),
       songs: [],
-      volume: 5,
+      volume: 100, // Volume iniziale
       playing: true,
+      speed: 1 // Velocità iniziale
     };
 
     queue.set(message.guild.id, queueContruct);
@@ -100,40 +110,131 @@ async function play(guild, song) {
   }
 
   try {
-    const stream = ytdl(song.url, { filter: 'audioonly' });
-    const resource = createAudioResource(stream);
-    serverQueue.player.play(resource);
+    currentStream = ytdl(song.url, { filter: 'audioonly', quality: 'highestaudio' });
+    currentStream.on('error', (error) => {
+      highWaterMark: 1 << 25; // 32MB buffer
+      dlChunkSize: 0; // Streaming mode
+      liveBuffer: 0; // No buffer for live streams
+      console.error('Stream Error:', error);
+      serverQueue.textChannel.send('Si è verificato un errore durante lo streaming. Riprova più tardi.');
+      serverQueue.songs.shift(); // Rimuovi la canzone corrente
+      play(guild, serverQueue.songs[0]); // Vai alla prossima canzone
+    });
+    
+    currentResource = createAudioResource(currentStream, {
+      inputType: StreamType.Arbitrary,
+      inlineVolume: true,
+      volume: serverQueue.volume / 100, // Volume da 0 a 1
+      sampleRate: 48000, // Sample rate per la qualità audio
+      bitrate: 128000, // Bitrate per la qualità audio
+      speed: serverQueue.speed, // Velocità di riproduzione
+    });
+
+    serverQueue.player.play(currentResource);
 
     // Crea pulsanti di controllo
     const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId('pause')
-          .setLabel('Pausa')
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId('play')
-          .setLabel('Riprendi')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId('skip')
-          .setLabel('Salta')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId('stop')
-          .setLabel('Ferma')
-          .setStyle(ButtonStyle.Danger)
-      );
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId('pause')
+        .setLabel('Pausa')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId('play')
+        .setLabel('Riprendi')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('skip')
+        .setLabel('Salta')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('stop')
+        .setLabel('Stop')
+        .setStyle(ButtonStyle.Danger)
+    );
 
+    // Crea un menu a tendina per la velocità
+    const speedMenu = new StringSelectMenuBuilder()
+    .setCustomId('speed_menu')
+    .setPlaceholder('Seleziona la velocità')
+    .addOptions([
+      { label: '1x', value: '1', default: true },
+      { label: '0.5x', value: '0.5' },
+      { label: '1.5x', value: '1.5' },
+      { label: '2x', value: '2' }
+    ]);
+
+    // Crea un menu a tendina per il volume
+    const volumeMenu = new StringSelectMenuBuilder()
+    .setCustomId('volume_menu')
+    .setPlaceholder('Seleziona il volume')
+    .addOptions([
+      { label: '0%', value: '0' },
+      { label: '25%', value: '25' },
+      { label: '50%', value: '50' },
+      { label: '75%', value: '75' },
+      { label: '100%', value: '100' }
+    ]);
+
+    // Crea una riga per il menu velocità
+    const speedRow = new ActionRowBuilder()
+    .addComponents(speedMenu);
+
+    // Crea una riga per il menu volume
+    const volumeRow = new ActionRowBuilder()
+    .addComponents(volumeMenu);
+
+    // Crea l'embed
     const embed = new EmbedBuilder()
-      .setTitle(`Ora in riproduzione: ${song.title}`)
-      .setDescription('Controlla la riproduzione:')
-      .addFields(
-        { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
-      );
+    .setTitle(`Ora in riproduzione: ${song.title}`)
+    .setDescription('Controlla la riproduzione:')
+    .addFields(
+      { name: 'Durata', value: `${Math.floor(song.duration / 60)}:${song.duration % 60}`, inline: true }
+    );
+  
+    serverQueue.message = await serverQueue.textChannel.send({
+      embeds: [embed],
+      components: [row, speedRow, volumeRow] // Aggiungi tutte le righe
+    });
 
-    // Invia il messaggio con l'embed e i pulsanti
-    serverQueue.textChannel.send({ embeds: [embed], components: [row] });
+    // Crea un gestore di interazioni per i pulsanti e i menu a tendina
+    const collector = serverQueue.message.createMessageComponentCollector({ time: 15000 }); // Tempo di ascolto delle interazioni
+
+    collector.on('collect', async (interaction) => {
+      if (interaction.customId === 'pause') {
+        if (serverQueue.player.state.status === AudioPlayerStatus.Paused) {
+          serverQueue.player.unpause();
+          await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
+        } else {
+          serverQueue.player.pause();
+          await interaction.update({ content: 'Riproduzione in pausa.', ephemeral: true });
+        }
+      } else if (interaction.customId === 'play') {
+        if (serverQueue.player.state.status === AudioPlayerStatus.Playing) {
+          await interaction.update({ content: 'La riproduzione è già in corso.', ephemeral: true });
+        } else {
+          serverQueue.player.unpause();
+          await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
+        }
+      } else if (interaction.customId === 'skip') {
+        skip(interaction.message, serverQueue);
+        await interaction.update({ content: 'Riproduzione saltata.', ephemeral: true });
+      } else if (interaction.customId === 'stop') {
+        stop(interaction.message, serverQueue);
+        await interaction.update({ content: 'Riproduzione interrotta.', ephemeral: true });
+      } else if (interaction.customId === 'speed_menu') {
+        serverQueue.speed = parseFloat(interaction.values[0]);
+        // Riproduci la canzone con la nuova velocità
+        currentResource.playbackSpeed = serverQueue.speed;
+        serverQueue.player.play(currentResource);
+        await interaction.update({ content: `Velocità modificata a ${interaction.values[0]}x.`, ephemeral: true });
+      } else if (interaction.customId === 'volume_menu') {
+        serverQueue.volume = parseInt(interaction.values[0]);
+        // Aggiorna il volume del player
+        currentResource.volume.setVolume(serverQueue.volume / 100); // Volume da 0 a 1
+        await interaction.update({ content: `Volume modificato a ${interaction.values[0]}%`, ephemeral: true });
+      }
+    });
 
     serverQueue.player.on(AudioPlayerStatus.Idle, () => {
       serverQueue.songs.shift();
@@ -184,30 +285,41 @@ client.on('interactionCreate', async interaction => {
   const serverQueue = queue.get(interaction.guild.id);
 
   if (!serverQueue) {
-    interaction.reply({ content: 'Nessuna canzone in riproduzione al momento.', ephemeral: true });
+    await interaction.update({ content: 'Nessuna canzone in riproduzione al momento.', ephemeral: true });
     return;
   }
 
   if (interaction.customId === 'play') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Paused) {
       serverQueue.player.unpause();
-      interaction.reply({ content: 'Ripresa della riproduzione.', ephemeral: true });
+      await interaction.update({ content: 'Ripresa della riproduzione.', ephemeral: true });
     } else {
-      interaction.reply({ content: 'La riproduzione è già in corso.', ephemeral: true });
+      await interaction.update({ content: 'La riproduzione è già in corso.', ephemeral: true });
     }
   } else if (interaction.customId === 'pause') {
     if (serverQueue.player.state.status === AudioPlayerStatus.Playing) {
       serverQueue.player.pause();
-      interaction.reply({ content: 'Riproduzione in pausa.', ephemeral: true });
+      await interaction.update({ content: 'Riproduzione in pausa.', ephemeral: true });
     } else {
-      interaction.reply({ content: 'La riproduzione è già in pausa.', ephemeral: true });
+      await interaction.update({ content: 'La riproduzione è già in pausa.', ephemeral: true });
     }
   } else if (interaction.customId === 'skip') {
     skip(interaction.message, serverQueue);
-    interaction.reply({ content: 'Riproduzione saltata.', ephemeral: true });
+    await interaction.update({ content: 'Riproduzione saltata.', ephemeral: true });
   } else if (interaction.customId === 'stop') {
     stop(interaction.message, serverQueue);
-    interaction.reply({ content: 'Riproduzione interrotta.', ephemeral: true });
+    await interaction.update({ content: 'Riproduzione interrotta.', ephemeral: true });
+  } else if (interaction.customId === 'speed_menu') {
+    serverQueue.speed = parseFloat(interaction.values[0]);
+    // Riproduci la canzone con la nuova velocità
+    currentResource.playbackSpeed = serverQueue.speed;
+    serverQueue.player.play(currentResource);
+    await interaction.update({ content: `Velocità modificata a ${interaction.values[0]}x.`, ephemeral: true });
+  } else if (interaction.customId === 'volume_menu') {
+    serverQueue.volume = parseInt(interaction.values[0]);
+    // Aggiorna il volume del player
+    currentResource.volume.setVolume(serverQueue.volume / 100); // Volume da 0 a 1
+    await interaction.update({ content: `Volume modificato a ${interaction.values[0]}%`, ephemeral: true });
   }
 });
 
