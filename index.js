@@ -201,6 +201,70 @@ async function execute(message, serverQueue, url) {
     }
   }
 }
+async function executePlaylist(message, serverQueue, url) {
+  const voiceChannel = message.member.voice.channel;
+  if (!voiceChannel) {
+    return message.channel.send('Devi essere in un canale vocale per riprodurre la musica!');
+  }
+  const permissions = voiceChannel.permissionsFor(message.client.user);
+  if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
+    return message.channel.send('Ho bisogno dei permessi per unirmi e parlare nel tuo canale vocale!');
+  }
+
+  if (!serverQueue) {
+    serverQueue = {
+      textChannel: message.channel,
+      voiceChannel: voiceChannel,
+      connection: null,
+      player: createAudioPlayer(),
+      songs: [],
+      volume: 5,
+      playing: true,
+      loop: false,
+      shuffle: false
+    };
+
+    queue.set(message.guild.id, serverQueue);
+
+    try {
+      serverQueue.connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: voiceChannel.guild.id,
+        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      });
+    } catch (err) {
+      console.log(err);
+      queue.delete(message.guild.id);
+      return message.channel.send('Errore nel connettersi al canale vocale!');
+    }
+  }
+
+  if (url.includes('youtube.com/playlist') || url.includes('list=')) {
+    const playlistId = url.split('list=')[1];
+    const playlistInfo = await getYouTubePlaylist(playlistId);
+    if (!playlistInfo || playlistInfo.length === 0) {
+      return message.channel.send('Errore nel caricamento della playlist di YouTube.');
+    }
+    for (const video of playlistInfo) {
+      const songInfo = await searchYouTube(video.title);
+      if (songInfo) {
+        const song = {
+          title: songInfo.title,
+          url: songInfo.url,
+          duration: songInfo.duration
+        };
+        serverQueue.songs.push(song);
+      } else {
+        message.channel.send(`Impossibile trovare una corrispondenza su YouTube per '${video.title}'`);
+      }
+    }
+    message.channel.send(`Playlist di YouTube aggiunta alla coda!`);
+    play(message.guild, serverQueue.songs[0]);
+  } else {
+    message.channel.send('Inserisci un link valido della playlist di YouTube.');
+  }
+}
+   
 async function getYouTubePlaylist(playlistId) {
   // Funzione per ottenere le informazioni della playlist di YouTube
   const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${process.env.YOUTUBE_API_KEY}`;
@@ -406,6 +470,13 @@ client.on('messageCreate', async message => {
     } else {
       message.channel.send('Inserisci un link YouTube o una query per la ricerca!');
     }
+  } else if (message.content.startsWith('!playlist')) {
+    const url = args[1];
+    if (url) {
+      executePlaylist(message, serverQueue, url);
+    } else {
+      message.channel.send('Inserisci un link della playlist di YouTube!');
+    }
   } else if (message.content.startsWith('!skip')) {
     skip(message, serverQueue);
   } else if (message.content.startsWith('!stop')) {
@@ -421,6 +492,7 @@ client.on('messageCreate', async message => {
       .setDescription('Ecco una lista di comandi disponibili:')
       .addFields(
         { name: '!play <link o query>', value: 'Riproduce una canzone o aggiunge una canzone alla coda.' },
+        { name: '!playlist <link>', value: 'Aggiunge una playlist di YouTube alla coda.' },
         { name: '!skip', value: 'Salta la canzone attualmente in riproduzione.' },
         { name: '!stop', value: 'Ferma la riproduzione della musica e disconnette il bot dal canale vocale.' },
         { name: '!queue', value: 'Mostra la coda di riproduzione attuale.' },
