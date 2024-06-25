@@ -2,10 +2,11 @@
   CyberHarmonix
 </h1>
 <p align="center">
-  <a href="https://github.com/seregonwar/CyberHarmonix">
-    <img alt="CyberHarmonix" src="https://github.com/seregonwar/CyberHarmonix/blob/main/CyberHarmonix-main/logo/CyberHarmonix.jpeg" width="300" />
+  <a href="https://github.com/seregonwar/CyberHarmonix/blob/main/img/CyberHarmonix.jpeg">
+    <img alt="CyberHarmonix" src="img/CyberHarmonix.jpeg" width="300" />
   </a>
 </p>
+
 
 ## Description
 CyberHarmonix is your ultimate Discord companion for immersive audio and video experiences. This cutting-edge bot brings together the best of cyber technology and harmonious entertainment, allowing you to stream your favorite tunes and videos seamlessly within your Discord server. With CyberHarmonix, you can elevate your server's atmosphere with futuristic soundscapes and captivating visuals, creating a truly unforgettable community experience. Whether you're hosting a virtual party, relaxing with friends, or simply enjoying some downtime, CyberHarmonix is here to take your Discord server to the next level.
